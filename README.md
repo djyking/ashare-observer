@@ -1,18 +1,18 @@
-# A 股量化交易研究平台
+# A 股量化交易平台
 
-基于 **Python + Vue 3 + TypeScript** 的 A 股量化交易研究与模拟平台，提供日线行情分析、技术指标、规则选股、可视化看板，以及符合 T+1 等约束的模拟交易账本。
+基于 **Python + Vue 3 + TypeScript** 的 A 股量化交易平台，提供日线行情分析、技术指标、规则选股、可视化看板，以及符合 T+1 等约束的模拟交易账本。
 
 当前支持研究分析和离线模拟，提供券商适配接口；**尚未连接券商实盘，未验证策略的实际盈利能力**。观察评分不是盈利概率，研究情景价不是预测必达价。
 
-![A 股量化交易研究平台](docs/preview-top.jpg)
+![A 股量化交易平台](docs/preview-top.jpg)
 
 ## 快速启动
 
 需要 Python 3.12 或更新版本。仓库包含已构建的前端页面，直接运行不需要安装 Node.js，也不需要证券账户或密钥。
 
 ```sh
-git clone https://github.com/djyking/ashare-observer.git
-cd ashare-observer
+git clone https://github.com/djyking/ashare-quant-platform.git
+cd ashare-quant-platform
 python -m ashare_monitor
 ```
 
