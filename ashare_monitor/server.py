@@ -6,7 +6,7 @@ import json
 import secrets
 
 from .runtime import BusyError
-from .brokers import BrokerGateway, BrokerError
+from .brokers import BrokerGateway, BrokerError, ConnectionManager
 from .storage import encode
 from .strategies import strategy_catalog
 from .market_tools import search_securities, watchlist_templates, csv_template
@@ -26,17 +26,24 @@ def unique_object(pairs):
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, runtime):
+    def __init__(self, address, runtime, *, broker_drivers=()):
         if address[0] != "127.0.0.1":
             raise ValueError("看板仅支持本机回环地址。")
         self.runtime = runtime
         self.brokers = BrokerGateway(runtime)
+        self.broker_connection = ConnectionManager(runtime.store.root, self.brokers, drivers=broker_drivers)
         self.token = secrets.token_urlsafe(32)
         super().__init__(address, Handler)
 
+    def server_close(self):
+        try:
+            self.broker_connection.close()
+        finally:
+            super().server_close()
+
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AShareDashboard/1.2"
+    server_version = "AShareDashboard/1.3"
 
     def log_message(self, _fmt, *_args):
         # No posted account-like information or arbitrary query text in logs.
@@ -97,6 +104,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, runtime.store.experiment(parts[3], "demo"))
             if url.path == "/api/brokers":
                 return self._send(200, self.server.brokers.catalog())
+            if url.path == "/api/broker/connection":
+                return self._send(200, self.server.broker_connection.snapshot())
             parts = url.path.strip("/").split("/")
             if len(parts) == 4 and parts[:2] == ["api", "brokers"] and parts[3] in {"account", "positions", "orders", "trades"}:
                 return self._send(200, getattr(self.server.brokers, parts[3])(parts[2]))
@@ -166,6 +175,13 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("请求体需要对象。")
             runtime = self.server.runtime
+            if path == "/api/broker/connection/save":
+                return self._send(200, self.server.broker_connection.save(payload))
+            if path in {"/api/broker/connection/connect", "/api/broker/connection/disconnect"}:
+                if payload:
+                    raise BrokerError("invalid_connection_config")
+                action = self.server.broker_connection.connect if path.endswith("/connect") else self.server.broker_connection.disconnect
+                return self._send(200, action())
             if path in {"/api/refresh", "/api/demo/advance"}:
                 if payload:
                     raise ValueError("该操作不接受额外参数。")

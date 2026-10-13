@@ -13,7 +13,7 @@ const { snapshot, ready, loading, busy, demoReady, connectionError, feedback, fe
 const nav = [{ id: 'overview', label: '市场概览', icon: '▦' }, { id: 'portfolio', label: '模拟账本', icon: '▥' }, { id: 'research', label: '策略回放', icon: '↗' }, { id: 'history', label: '研究历史', icon: '◷' }, { id: 'settings', label: '数据与设置', icon: '⚙' }, { id: 'brokers', label: '券商接入', icon: '⇄' }]
 const view = ref('overview'), clock = ref('')
 const label = computed(() => nav.find(item => item.id === view.value)?.label ?? '市场概览')
-const banner = computed(() => view.value === 'research' ? { title: '独立历史策略研究', description: '每个实验使用自己的数据源，与观察看板、手动账本分离。请以报告标注的来源为准。', badge: 'REPLAY' } : !snapshot.value ? { title: '正在读取数据', description: '连接本地研究平台，获取最新研究快照。', badge: '—' } : snapshot.value.app.mode === 'demo' ? { title: '演示环境 · 合成行情', description: '价格不是实际股价；全部资金、委托和成交均为模拟。', badge: 'DEMO' } : { title: snapshot.value.app.mode === 'eastmoney' ? '真实行情 · 已收盘日线' : '本地 CSV · 只读研究', description: '研究结果不等于交易指令；账本保留独立演示数据，不使用当前行情计价。', badge: snapshot.value.app.mode === 'eastmoney' ? '日线' : 'CSV' })
+const banner = computed(() => view.value === 'brokers' ? { title: '账户接入 · 只读验证', description: '示例账户明确标注虚构数据；真实券商需通过官方适配器接入，当前不提交买卖。', badge: 'CONNECT' } : view.value === 'research' ? { title: '独立历史策略研究', description: '每个实验使用自己的数据源，与观察看板、手动账本分离。请以报告标注的来源为准。', badge: 'REPLAY' } : !snapshot.value ? { title: '正在读取数据', description: '连接本地研究平台，获取最新研究快照。', badge: '—' } : snapshot.value.app.mode === 'demo' ? { title: '演示环境 · 合成行情', description: '价格不是实际股价；全部资金、委托和成交均为模拟。', badge: 'DEMO' } : { title: snapshot.value.app.mode === 'eastmoney' ? '真实行情 · 已收盘日线' : '本地 CSV · 只读研究', description: '研究结果不等于交易指令；账本保留独立演示数据，不使用当前行情计价。', badge: snapshot.value.app.mode === 'eastmoney' ? '日线' : 'CSV' })
 const error = computed(() => connectionError.value || snapshot.value?.app.last_error)
 let timer: ReturnType<typeof setTimeout> | undefined, clockTimer: ReturnType<typeof setInterval> | undefined
 let disposed = false
@@ -39,7 +39,7 @@ onBeforeUnmount(() => { disposed = true; platform.dispose(); clearTimeout(timer)
       <Research v-show="view === 'research'" :snapshot="snapshot" :active="view === 'research'"/>
       <History v-show="view === 'history'" :active="view === 'history'" :revision="snapshot?.app.revision"/>
       <Settings v-show="view === 'settings'" :settings="snapshot?.settings ?? null" :busy="busy" :mutate="mutate" :csrf="snapshot?.csrf_token" :active="view === 'settings'"/>
-      <BrokerAccess v-show="view === 'brokers'" :active="view === 'brokers'"/>
+      <BrokerAccess v-show="view === 'brokers'" :active="view === 'brokers'" :csrf="snapshot?.csrf_token"/>
       <footer class="page-footer"><span>A 股量化交易研究平台 <span class="footer-divider">/</span> 行情 · 研究 · 模拟</span><span>{{ view === 'research' ? '实验独立来源 · 详见报告' : snapshot?.app.source ?? '本地研究工具' }} · 不构成投资建议</span></footer>
     </main>
   </div>

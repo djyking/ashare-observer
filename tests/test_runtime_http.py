@@ -10,6 +10,7 @@ from unittest.mock import patch
 from ashare_monitor.runtime import Runtime
 from ashare_monitor.server import DashboardServer
 from ashare_monitor.storage import Store
+from ashare_monitor.brokers import ConnectionDriver, ConnectionField
 
 
 def wait_idle(runtime):
@@ -227,6 +228,93 @@ class HTTPTests(unittest.TestCase):
                 self.assertEqual(self.call("/")[0], 503)
                 (root / "index.html").write_text("<!doctype html><title>Vue</title>", encoding="utf-8")
                 self.assertEqual(self.call("/")[0], 200)
+
+    def test_connection_demo_lifecycle_preserves_paper_ledger(self):
+        before = self.runtime.store.load()
+        base = "/api/broker/connection"
+        status, body = self.call(base)
+        self.assertEqual(status, 200)
+        config = json.loads(body)
+        self.assertTrue(config["read_only"])
+        self.assertFalse(config["secrets_persisted"])
+        self.assertEqual(config["state"]["status"], "disconnected")
+        self.assertEqual(self.call(base + "/connect", "POST", {})[0], 400)
+        status, body = self.call(base + "/save", "POST", {
+            "driver": "demo", "fields": {"account_id": "demo"}, "secrets": {"password": "demo123"}})
+        self.assertEqual(status, 200)
+        saved = json.loads(body)
+        self.assertEqual(saved["state"]["status"], "disconnected")
+        self.assertEqual(saved["profile"]["fields"], {})
+        self.assertIn("password", saved["profile"]["secret_fields_ready"])
+        status, body = self.call(base + "/connect", "POST", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["state"]["provider_id"], "broker_demo")
+        for operation in ("account", "positions", "orders", "trades"):
+            status, body = self.call(f"/api/brokers/broker_demo/{operation}")
+            self.assertEqual(status, 200)
+            self.assertIn(operation, json.loads(body))
+        for operation in ("orders", "cancel"):
+            self.assertEqual(self.call(f"/api/brokers/broker_demo/{operation}", "POST", {})[0], 409)
+        status, body = self.call(base + "/disconnect", "POST", {})
+        self.assertEqual(status, 200)
+        profile = json.loads(body)["profile"]
+        self.assertEqual(profile["secret_fields_ready"], [])
+        self.assertEqual(profile["masked_fields"], {})
+        self.assertEqual(self.call("/api/brokers/broker_demo/account")[0], 503)
+        self.assertEqual(self.call(base + "/connect", "POST", {})[0], 400)
+        self.assertEqual(self.runtime.store.load(), before)
+
+    def test_connection_secrets_validation_and_restart(self):
+        base = "/api/broker/connection"
+        payload = {"driver": "unconfigured", "fields": {"broker_name": "待选择券商", "account_id": "sensitive-account-872143"},
+                   "secrets": {"password": "private-pass-example-872143"}}
+        status, body = self.call(base + "/save", "POST", payload)
+        self.assertEqual(status, 200)
+        for value in (payload["fields"]["account_id"], payload["secrets"]["password"]):
+            self.assertNotIn(value, body.decode())
+            for file in Path(self.tmp.name).rglob("*"):
+                if file.is_file():
+                    self.assertNotIn(value.encode(), file.read_bytes(), file.name)
+        status, body = self.call(base + "/connect", "POST", {})
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["code"], "broker_unconfigured")
+        restored = DashboardServer(("127.0.0.1", 0), self.runtime)
+        try:
+            view = restored.broker_connection.snapshot()
+            self.assertEqual(view["profile"]["fields"], {"broker_name": "待选择券商"})
+            self.assertEqual(view["profile"]["masked_fields"], {})
+            self.assertEqual(view["profile"]["secret_fields_ready"], [])
+            self.assertEqual(view["state"]["status"], "disconnected")
+        finally:
+            restored.server_close()
+        before = self.server.broker_connection.snapshot()["profile"]
+        for invalid in ({"driver": "../../module"}, {"fields": {"sdk_url": "http://example.invalid"}},
+                        {"secrets": {"password": ["secret"]}}, {"driver": "demo", "live_enabled": True}):
+            self.assertEqual(self.call(base + "/save", "POST", invalid)[0], 400)
+            self.assertEqual(self.server.broker_connection.snapshot()["profile"], before)
+        for action in ("save", "connect", "disconnect"):
+            self.assertEqual(self.call(base + "/" + action, "POST", {}, {"X-CSRF-Token": "bad"})[0], 403)
+            self.assertEqual(self.call(base + "/" + action, "POST", {}, {"Origin": "https://foreign.example"})[0], 403)
+        self.assertEqual(self.call(base + "/connect", "POST", {"password": "not-accepted"})[0], 400)
+
+    def test_server_bootstrap_recognizes_custom_driver_before_loading_profile(self):
+        driver = ConnectionDriver("local_client", "本地客户端", "测试字段", (
+            ConnectionField("client_path", "客户端目录"),
+            ConnectionField("account_id", "账号", masked=True),
+        ))
+        for first in (True, False):
+            server = DashboardServer(("127.0.0.1", 0), self.runtime, broker_drivers=(driver,))
+            try:
+                if first:
+                    server.broker_connection.save({"driver": driver.id, "fields": {
+                        "client_path": "example-client-directory", "account_id": "private-account"}})
+                else:
+                    profile = server.broker_connection.snapshot()["profile"]
+                    self.assertEqual(profile["driver"], driver.id)
+                    self.assertEqual(profile["fields"], {"client_path": "example-client-directory"})
+                    self.assertEqual(profile["masked_fields"], {})
+            finally:
+                server.server_close()
 
 
 if __name__ == "__main__":
