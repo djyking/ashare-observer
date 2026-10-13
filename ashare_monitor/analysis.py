@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 
 from .data import validate_candles
+from .strategies import STRATEGY_VERSION, evaluate_strategies, normalize_strategy_config
 
 
 def ema(values: list[float], period: int) -> list[float | None]:
@@ -105,10 +106,13 @@ def _rounded(values: dict) -> dict:
     return {k: round(v, 6) if isinstance(v, float) and math.isfinite(v) else v for k, v in values.items()}
 
 
-def analyze_stock(stock: dict) -> dict:
+def analyze_stock(stock: dict, config: dict | None = None) -> dict:
+    strategy_config = normalize_strategy_config(config)
     result = {"code": stock.get("code"), "name": stock.get("name"), "score": None,
               "status": "unavailable", "route": "无有效行情", "reasons": [],
-              "indicators": {}, "plan": None, "history": [],
+              "indicators": {}, "plan": None, "history": [], "chart_series": [],
+              "score_components": [], "strategy_results": [], "strategy_history": [],
+              "strategy_version": STRATEGY_VERSION,
               "notice": "教学观察分，不是盈利概率；情景价位不是投资建议或买入授权"}
     if stock.get("status") != "ok" or not stock.get("candles"):
         result["reasons"] = [stock.get("error") or "没有可用的已收盘日线"]
@@ -120,6 +124,11 @@ def analyze_stock(stock: dict) -> dict:
         return result
     series = _series(candles)
     values, score, status, route, reasons = _at(candles, series, len(candles) - 1)
+    evaluations = evaluate_strategies(candles, values, score, len(candles) - 1, strategy_config)
+    if config is not None and status != "insufficient":
+        matches = [item["name"] for item in evaluations if item["matched"]]
+        status = "watch" if matches else "wait"
+        route = " / ".join(matches) if matches else "策略条件待满足"
     stale = bool(stock.get("stale") or (stock.get("as_of") and candles[-1]["date"] < stock["as_of"]))
     if stale:
         if status == "watch":
@@ -128,7 +137,17 @@ def analyze_stock(stock: dict) -> dict:
         reasons.append(f"最近日线 {candles[-1]['date']} 落后于观察日 {stock.get('as_of') or stock.get('stale_as_of') or '当前日期'}；"
                        "可能停牌或数据源延迟，评分仅描述历史状态，不形成当前观察机会或价位情景")
     result.update(score=score if status != "insufficient" else None, status=status, route=route,
-                  reasons=reasons, indicators=_rounded(values), data_date=candles[-1]["date"], stale=stale)
+                  reasons=reasons, indicators=_rounded(values), data_date=candles[-1]["date"], stale=stale,
+                  strategy_results=evaluations)
+    component_rules = {
+        "price_trend": ("价格趋势", "收盘价 ≥ EMA20 得 20 分，否则 0 分"),
+        "medium_trend": ("中期趋势", "EMA20 ≥ EMA60 得 20 分，否则 0 分"),
+        "momentum": ("MACD 动量", "DIF − DEA ≥ 0 得 20 分，否则 0 分"),
+        "rsi_balance": ("RSI 均衡", "RSI14 在 45～65 得 20 分，在 35～75 得 10 分，否则 0 分"),
+        "volume": ("成交量", "前 20 日量比在 0.8～2 得 20 分，其他正量比得 5 分，无成交量得 0 分"),
+    }
+    result["score_components"] = [{"key": key, "label": info[0], "score": values.get("score_components", {}).get(key, 0),
+                                    "max_score": 20, "rule": info[1]} for key, info in component_rules.items()]
     raw = stock.get("raw_candles") or []
     if status != "insufficient" and raw and not stale:
         try:
@@ -148,12 +167,24 @@ def analyze_stock(stock: dict) -> dict:
     # One transition event per observation episode, calculated from prefixes only.
     previous_status = None
     history = []
-    for i in range(59, len(candles)):
-        _, historical_score, historical_status, historical_route, _ = _at(candles, series, i)
+    previous_matches = set()
+    strategy_history = []
+    for i in range(len(candles)):
+        historical_values, historical_score, historical_status, historical_route, _ = _at(candles, series, i)
+        result["chart_series"].append(_rounded({"date": candles[i]["date"], **{key: historical_values.get(key) for key in series},
+                                                 "volume_ratio": historical_values.get("volume_ratio")}))
+        matches = evaluate_strategies(candles, historical_values, historical_score, i, strategy_config)
+        current_matches = {item["id"] for item in matches if item["matched"]}
+        for match in matches:
+            if match["matched"] and match["id"] not in previous_matches:
+                strategy_history.append({"date": candles[i]["date"], "strategy_id": match["id"], "name": match["name"],
+                                         "score": historical_score, "close": candles[i]["close"]})
+        previous_matches = current_matches
         if historical_status == "watch" and previous_status != "watch":
             history.append({"date": candles[i]["date"], "code": stock.get("code"), "name": stock.get("name"),
                             "score": historical_score, "status": historical_status, "route": historical_route,
                             "close": candles[i]["close"], "description": "教学观察条件首次满足；未模拟当根收盘成交"})
         previous_status = historical_status
     result["history"] = history[-60:]
+    result["strategy_history"] = strategy_history[-180:]
     return result

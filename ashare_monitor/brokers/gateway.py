@@ -4,7 +4,7 @@ import math
 import re
 
 from .adapters import PaperBrokerAdapter, UnconfiguredBrokerAdapter
-from .base import BrokerAdapter, BrokerError, BrokerStatus, OPERATIONS
+from .base import BrokerAdapter, BrokerError, BrokerStatus, PaperValidationError, OPERATIONS
 
 
 MESSAGES = {
@@ -20,14 +20,14 @@ ACCOUNT_FIELDS = {
 }
 POSITION_FIELDS = {
     "code", "name", "quantity", "sellable", "frozen", "avg_cost", "last_price",
-    "price_date", "price_stale", "market_value", "unrealized_pnl",
+    "price_date", "price_stale", "market_value", "unrealized_pnl", "sellable_on_execution",
 }
 ORDER_FIELDS = {
     "id", "request_id", "code", "name", "side", "quantity", "status", "created_date", "limit_price",
     "execute_after", "filled_date", "filled_price", "reserved_cash",
     "last_checked_date", "expired_date", "cancelled_date",
 }
-TRADE_FIELDS = {"order_id", "date", "side", "code", "name", "quantity", "price", "notional", "fee", "pnl"}
+TRADE_FIELDS = {"id", "order_id", "date", "side", "code", "name", "quantity", "price", "notional", "fee", "pnl"}
 
 
 @dataclass(frozen=True)
@@ -135,8 +135,12 @@ class BrokerGateway:
                 if not isinstance(result, dict) or result.get("ok") is not True:
                     raise BrokerError()
                 body = {"ok": True, "message": "模拟委托已登记。" if operation == "place_order" else "模拟委托已撤销。"}
+                if result.get("order") is not None:
+                    body["order"] = _project(result["order"], ORDER_FIELDS)
             return {"provider": provider.id, "environment": provider.environment, **body}
         except BrokerError as exc:
+            if type(provider.adapter) is PaperBrokerAdapter and isinstance(exc, PaperValidationError):
+                raise PaperValidationError(exc.public_message) from None
             # Rebuild it: a third-party adapter may have modified exception text.
             raise BrokerError(exc.code) from None
         except Exception:

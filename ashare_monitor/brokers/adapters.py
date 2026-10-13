@@ -2,7 +2,7 @@
 from copy import deepcopy
 from typing import TYPE_CHECKING
 
-from .base import BrokerAdapter, BrokerError, BrokerStatus, OPERATIONS
+from .base import BrokerAdapter, BrokerError, BrokerStatus, PaperValidationError, OPERATIONS
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -44,14 +44,24 @@ class PaperBrokerAdapter(BrokerAdapter):
             return method(payload)
         except BusyError:
             raise BrokerError("broker_busy") from None
-        except (ValueError, TypeError, KeyError):
+        except ValueError as exc:
+            raise PaperValidationError(str(exc)) from None
+        except (TypeError, KeyError):
             raise BrokerError("invalid_request") from None
 
     def place_order(self, payload):
-        return self._mutate(self.runtime.paper_order, payload)
+        with self.runtime.lock:
+            result = self._mutate(self.runtime.paper_order, payload)
+            order = next((o for o in self.runtime.state["ledger"]["orders"]
+                          if o["request_id"] == payload["request_id"]), None)
+            return {**result, "order": deepcopy(order)}
 
     def cancel_order(self, payload):
-        return self._mutate(self.runtime.cancel, payload)
+        with self.runtime.lock:
+            result = self._mutate(self.runtime.cancel, payload)
+            order = next((o for o in self.runtime.state["ledger"]["orders"]
+                          if o["id"] == payload["order_id"]), None)
+            return {**result, "order": deepcopy(order)}
 
 
 class UnconfiguredBrokerAdapter(BrokerAdapter):

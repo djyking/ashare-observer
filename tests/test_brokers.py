@@ -46,14 +46,19 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(self.gateway.trades("paper")["trades"], [])
 
     def test_order_and_cancel_use_existing_ledger_and_idempotency(self):
-        self.gateway.place_order("paper", self.order)
+        response = self.gateway.place_order("paper", self.order)
+        self.assertEqual(response["order"]["id"], "paper-1")
+        self.assertEqual(response["order"]["quantity"], 100)
+        self.assertEqual(response["order"]["status"], "pending")
         self.gateway.place_order("paper", self.order)
         view = self.runtime.snapshot("")["portfolio"]
         self.assertEqual(len(view["orders"]), 1)
         self.assertGreater(view["frozen_cash"], 0)
         self.assertEqual(self.gateway.account("paper")["account"]["frozen_cash"], view["frozen_cash"])
         order_id = view["orders"][0]["id"]
-        self.gateway.cancel_order("paper", {"order_id": order_id})
+        response = self.gateway.cancel_order("paper", {"order_id": order_id})
+        self.assertEqual(response["order"]["id"], order_id)
+        self.assertEqual(response["order"]["status"], "cancelled")
         self.gateway.cancel_order("paper", {"order_id": order_id})
         self.assertEqual(self.gateway.account("paper")["account"]["frozen_cash"], 0)
         self.assertEqual(self.gateway.orders("paper")["orders"][0]["status"], "cancelled")
@@ -85,10 +90,25 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(self.gateway.orders("paper")["orders"], [])
 
     def test_shared_rules_reject_invalid_quantity_and_request_reuse(self):
-        self.assertBrokerError("invalid_request", 400, self.gateway.place_order, "paper", {**self.order, "quantity": 1})
+        exc = self.assertBrokerError("invalid_request", 400, self.gateway.place_order, "paper", {**self.order, "quantity": 1})
+        self.assertIn("100 股", exc.public_message)
         self.gateway.place_order("paper", self.order)
         self.assertBrokerError("invalid_request", 400, self.gateway.place_order, "paper", {**self.order, "quantity": 200})
         self.assertEqual(len(self.gateway.orders("paper")["orders"]), 1)
+
+    def test_own_money_error_is_preserved_but_third_party_validation_is_not(self):
+        self.runtime.state["ledger"]["cash"] = "1.00"
+        exc = self.assertBrokerError("invalid_request", 400, self.gateway.place_order, "paper", self.order)
+        self.assertIn("可用资金不足", exc.public_message)
+        self.assertIn("需冻结", exc.public_message)
+        from ashare_monitor.brokers.base import PaperValidationError
+        adapter = ContractDemoAdapter()
+        def sdk_failure():
+            raise PaperValidationError("private-key-in-sdk-error")
+        adapter.account = sdk_failure
+        self.gateway.register("live", adapter, name="接口测试", environment="live")
+        exc = self.assertBrokerError("invalid_request", 400, self.gateway.account, "live")
+        self.assertNotIn("private-key", exc.public_message)
 
     def test_adapter_registration_is_an_actual_read_only_extension(self):
         register_contract_demo(self.gateway)

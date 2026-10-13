@@ -1,0 +1,7 @@
+<script setup lang="ts">
+import type { StrategyCatalog, StrategySetting } from '../research-types'
+const props=defineProps<{catalog:StrategyCatalog|null;modelValue:Record<string,StrategySetting>;disabled?:boolean}>()
+const emit=defineEmits<{ 'update:modelValue':[value:Record<string,StrategySetting>] }>()
+function update(id:string,key:string,value:number|boolean){emit('update:modelValue',{...props.modelValue,[id]:{...props.modelValue[id],[key]:value}})}
+</script>
+<template><div class="strategy-editor"><details v-for="strategy in catalog?.strategies??[]" :key="strategy.id"><summary>{{ strategy.name }} <span class="badge" :class="modelValue[strategy.id]?.enabled?'watch':'neutral'">{{ modelValue[strategy.id]?.enabled?'启用':'关闭' }}</span></summary><p>{{ strategy.description }}</p><fieldset :disabled="disabled"><label class="checkbox-label"><input type="checkbox" :checked="modelValue[strategy.id]?.enabled" @change="update(strategy.id,'enabled',($event.target as HTMLInputElement).checked)">启用此策略</label><div class="parameter-grid"><label v-for="parameter in strategy.parameters" :key="parameter.key">{{ parameter.label }}<input type="number" :value="modelValue[strategy.id]?.[parameter.key]??parameter.default" :min="parameter.min" :max="parameter.max" :step="parameter.step" @input="update(strategy.id,parameter.key,Number(($event.target as HTMLInputElement).value))"></label></div></fieldset><ul><li v-for="rule in strategy.rules" :key="rule">{{ rule }}</li></ul></details><p v-if="!catalog" class="muted">等待策略定义加载。</p></div></template>
