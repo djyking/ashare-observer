@@ -157,6 +157,22 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.call("/api/orders/live", "POST", {})[0], 404)
         self.assertEqual(self.call("/../../README.md")[0], 404)
 
+    def test_rejected_post_with_delayed_body_keeps_error_response(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.putrequest("POST", "/api/refresh")
+            conn.putheader("Content-Type", "application/json")
+            conn.putheader("Content-Length", "2")
+            conn.putheader("X-CSRF-Token", "invalid")
+            conn.endheaders()
+            time.sleep(0.05)
+            conn.send(b"{}")
+            response = conn.getresponse()
+            self.assertEqual(response.status, 403)
+            self.assertIn("error", json.loads(response.read()))
+        finally:
+            conn.close()
+
     def test_order_roundtrip(self):
         status, _body = self.call("/api/paper/order", "POST", {"side": "buy", "code": "600036", "quantity": 100, "request_id": "http-buy-001"})
         self.assertEqual(status, 200)

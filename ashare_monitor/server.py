@@ -102,19 +102,33 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self._send(500, {"error": "读取失败，请查看应用状态或重新启动。"})
 
+    def _reject_post(self, status, message):
+        # http.client and browsers may send headers and body in separate writes.
+        # Consume a small declared body before closing, otherwise Windows may
+        # reset the connection and hide the intended 403/415 response.
+        self.close_connection = True
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if 0 < length <= 16384 and not self.headers.get("Transfer-Encoding"):
+                self.connection.settimeout(1)
+                self.rfile.read(length)
+        except (ValueError, OSError):
+            pass
+        return self._send(status, {"error": message})
+
     def do_POST(self):
         if not self._allowed_host():
-            return self._send(403, {"error": "请求主机不受支持。"})
+            return self._reject_post(403, "请求主机不受支持。")
         host = self.headers.get("Host", "")
         if self.headers.get("Origin") not in {None, f"http://{host}"}:
-            return self._send(403, {"error": "不接受跨站操作。"})
+            return self._reject_post(403, "不接受跨站操作。")
         if self.headers.get("Sec-Fetch-Site") == "cross-site":
-            return self._send(403, {"error": "不接受跨站操作。"})
+            return self._reject_post(403, "不接受跨站操作。")
         supplied = self.headers.get("X-CSRF-Token", "")
         if not supplied.isascii() or not secrets.compare_digest(supplied, self.server.token):
-            return self._send(403, {"error": "页面会话已更新，请刷新后重试。"})
+            return self._reject_post(403, "页面会话已更新，请刷新后重试。")
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
-            return self._send(415, {"error": "需要 JSON 请求。"})
+            return self._reject_post(415, "需要 JSON 请求。")
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if not 2 <= length <= 16384 or self.headers.get("Transfer-Encoding"):
