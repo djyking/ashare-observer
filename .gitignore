@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.coverage
+var/
+test-results/
+*.sqlite*
+*.db
+*.log
+.env*
+*.pem
+*.key
+*.zip
+*.tar*
