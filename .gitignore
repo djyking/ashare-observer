@@ -3,6 +3,11 @@ __pycache__/
 .venv/
 .pytest_cache/
 .coverage
+coverage/
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+.vite/
 var/
 test-results/
 *.sqlite*
@@ -13,3 +18,11 @@ test-results/
 *.key
 *.zip
 *.tar*
+private/
+credentials/
+secrets/
+*.local
+*.p12
+*.pfx
+*.crt
+*.cer

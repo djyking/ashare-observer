@@ -1,0 +1,41 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Python and Vue (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Backend tests
+        run: python -m unittest discover -s tests -v
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm test
+      - name: Typecheck and build frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Verify committed frontend build
+        run: python -c "import subprocess, sys; changes = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all', '--', 'ashare_monitor/web'], text=True); print(changes); sys.exit(bool(changes))"

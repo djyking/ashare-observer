@@ -1,9 +1,16 @@
 * text=auto
 *.py text eol=lf
 *.js text eol=lf
+*.ts text eol=lf
+*.vue text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
 *.css text eol=lf
 *.html text eol=lf
 *.md text eol=lf
 *.cmd text eol=crlf
 *.jpg binary
 *.png binary
+
+# Built assets are shipped for Python-only startup; count the actual Vue/TS source.
+ashare_monitor/web/** linguist-generated=true

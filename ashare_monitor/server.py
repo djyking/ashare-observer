@@ -1,11 +1,12 @@
 """Loopback-only dashboard, strict origin validation, bounded JSON mutations."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, unquote
 import json
 import secrets
 
 from .runtime import BusyError
+from .brokers import BrokerGateway, BrokerError
 from .storage import encode
 
 WEB = Path(__file__).parent / "web"
@@ -27,12 +28,13 @@ class DashboardServer(ThreadingHTTPServer):
         if address[0] != "127.0.0.1":
             raise ValueError("看板仅支持本机回环地址。")
         self.runtime = runtime
+        self.brokers = BrokerGateway(runtime)
         self.token = secrets.token_urlsafe(32)
         super().__init__(address, Handler)
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AShareDashboard/1.0"
+    server_version = "AShareDashboard/1.1"
 
     def log_message(self, _fmt, *_args):
         # No posted account-like information or arbitrary query text in logs.
@@ -70,14 +72,31 @@ class Handler(BaseHTTPRequestHandler):
                 query = parse_qs(url.query)
                 return self._send(200, self.server.runtime.store.history(
                     int(query.get("page", [1])[0]), int(query.get("page_size", [30])[0])))
-            resources = {"/": ("index.html", "text/html; charset=utf-8"),
-                         "/index.html": ("index.html", "text/html; charset=utf-8"),
-                         "/app.css": ("app.css", "text/css; charset=utf-8"),
-                         "/app.js": ("app.js", "text/javascript; charset=utf-8")}
-            if url.path in resources:
-                filename, mime = resources[url.path]
-                return self._send(200, (WEB / filename).read_bytes(), mime)
+            if url.path == "/api/brokers":
+                return self._send(200, self.server.brokers.catalog())
+            parts = url.path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "brokers"] and parts[3] in {"account", "positions", "orders", "trades"}:
+                return self._send(200, getattr(self.server.brokers, parts[3])(parts[2]))
+            if url.path in {"/", "/index.html"}:
+                index = WEB / "index.html"
+                if not index.is_file():
+                    return self._send(503, {"error": "前端尚未构建，请在 frontend 中运行 npm ci 和 npm run build。"})
+                return self._send(200, index.read_bytes(), "text/html; charset=utf-8")
+            # Only serve Vite assets beneath the build directory. Decode before
+            # checking segments; resolve also prevents a symlink escape.
+            path = unquote(url.path)
+            if path.startswith("/assets/") and not any(c in path for c in ("\\", ":", "\x00")):
+                segments = path.lstrip("/").split("/")
+                mime = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+                        ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg",
+                        ".webp": "image/webp", ".woff2": "font/woff2"}
+                if not any(part in {"", ".", ".."} for part in segments):
+                    asset = WEB.joinpath(*segments).resolve()
+                    if asset.is_relative_to(WEB.resolve()) and asset.is_relative_to((WEB / "assets").resolve()) and asset.suffix in mime and asset.is_file():
+                        return self._send(200, asset.read_bytes(), mime[asset.suffix])
             return self._send(404, {"error": "页面或接口不存在。"})
+        except BrokerError as exc:
+            return self._send(exc.status_code, {"error": exc.public_message, "code": exc.code})
         except (ValueError, TypeError):
             return self._send(400, {"error": "请求参数无效。"})
         except Exception:
@@ -92,7 +111,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Sec-Fetch-Site") == "cross-site":
             return self._send(403, {"error": "不接受跨站操作。"})
         supplied = self.headers.get("X-CSRF-Token", "")
-        if not secrets.compare_digest(supplied, self.server.token):
+        if not supplied.isascii() or not secrets.compare_digest(supplied, self.server.token):
             return self._send(403, {"error": "页面会话已更新，请刷新后重试。"})
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self._send(415, {"error": "需要 JSON 请求。"})
@@ -117,7 +136,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, runtime.paper_order(payload))
             if path == "/api/paper/cancel":
                 return self._send(200, runtime.cancel(payload))
+            parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "brokers"] and parts[3] in {"orders", "cancel"}:
+                operation = "place_order" if parts[3] == "orders" else "cancel_order"
+                return self._send(200, getattr(self.server.brokers, operation)(parts[2], payload))
             return self._send(404, {"error": "操作不存在。"})
+        except BrokerError as exc:
+            return self._send(exc.status_code, {"error": exc.public_message, "code": exc.code})
         except BusyError as exc:
             return self._send(409, {"error": str(exc)})
         except (ValueError, TypeError, KeyError) as exc:
