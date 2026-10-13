@@ -26,8 +26,8 @@ class MyBrokerAdapter(BrokerAdapter):
 | `account()` | 人民币资金与估值字段的字典；不含账号、用户名、凭据 |
 | `positions()` | 持仓列表；包含总数量、可卖数量、冻结数量和估值 |
 | `orders()` | 委托列表；保留不含账号的委托编号、状态、数量和日期 |
-| `trades()` | 成交列表；保留成交价格、数量、费用和委托编号 |
-| `place_order(payload)` | 校验业务规则、持久化请求幂等信息，再提交委托；成功返回 `{"ok": true}` |
+| `trades()` | 成交列表；保留成交 `id`、关联 `order_id`、价格、数量和费用 |
+| `place_order(payload)` | 校验业务规则、持久化请求幂等信息，再提交委托；成功返回 `{"ok": true, "order": {...}}`，其中 `order` 为可选公开委托字段 |
 | `cancel_order(payload)` | 查询并撤销指定委托；区分已成交、部分成交与已撤销 |
 
 能力名依次为 `account`、`positions`、`orders`、`trades`、`place_order`、`cancel_order`。网关根据实际能力拒绝不支持的请求。当前版本对所有 `environment="live"` 的适配器统一关闭下单与撤单；即使某 SDK 声称支持交易，网关也不会调用它的这两个方法。
@@ -51,16 +51,20 @@ python -m examples.demo_broker_adapter
 | `GET /api/brokers/{provider}/trades` | `{provider, environment, trades}` |
 | `POST /api/brokers/{provider}/orders` | `{side, code, quantity, request_id}`；模拟委托 |
 | `POST /api/brokers/{provider}/cancel` | `{order_id}`；撤销模拟委托 |
+| `POST /api/paper/preview` | `{side, code, quantity}`；只读预检查，无冻结或下单副作用 |
+| `GET /api/paper/records?kind=orders&page=1` | 委托分页，每页 30 条；`kind=trades` 为成交分页 |
 
 默认 `provider` 只有 `paper` 和 `live`。未知名称返回 404，绝不回落到模拟账户。写请求沿用页面的同源和 `X-CSRF-Token` 校验。旧 `/api/paper/order`、`/api/paper/cancel` 仍兼容。
 
 `paper` 桥接原 `Runtime`，不复制资金状态，也不创建新账本：资金冻结、T+1、整手约束、观察列表、合成行情来源限制、扫描互斥和持久化都由已有逻辑处理。切到公开日线或 CSV 研究模式后，模拟账户可读、模拟写入被拒绝。
 
+模拟登记和撤销结果包含 `order` 的公开字段，调用方可据 `id/status/quantity/request_id` 对账，不能仅因 HTTP 200 就把“待成交”当作“已成交”。预检查显示估计费用、资金与下一交易日可卖股份；正式提交仍再次检查。在当日开盘买入后，可以预约次日卖出，实际成交日仍检查 T+1。
+
 ## 公开数据与错误边界
 
 - 网关仅输出显式白名单字段，丢弃 `account_id`、原始 SDK 回包、自由格式内部错误等字段；浏览器无需账户身份或密钥。
 - SDK 返回字段映射由适配器负责。不要把账号、密钥或原始异常塞进 `name`、委托编号等合法公开字段。
-- `BrokerError` 只输出固定的中文公开文案和错误码；SDK 异常字符串不回传浏览器。
+- 第三方 `BrokerError` 只输出固定的中文公开文案和错误码；SDK 异常字符串不回传浏览器。应用自有、精确匹配的 `PaperBrokerAdapter` 可返回自己的业务校验原因（例如“含费用需冻结 1105.01 元”），使用内部 `PaperValidationError`；其他适配器即使抛同名错误，也不会获准透传自由文本。
 - 读账户数据本身仍有隐私，服务默认仅监听本机；不要直接公开发布运行实例。
 
 | 错误码 | HTTP |

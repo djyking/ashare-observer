@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import StockChart from './StockChart.vue'
+import Pagination from './Pagination.vue'
 import type { Analysis, Snapshot } from '../types'
 import { fmt, money, pct, signed, color, statusNames, routeNames, exchangeName, timeText, numeric } from '../format'
 const props = defineProps<{ snapshot: Snapshot | null }>()
@@ -14,9 +15,15 @@ const visible = computed(() => rows.value.filter(row => filter.value === 'all' |
   if (sort.value === 'code') return a.stock.code.localeCompare(b.stock.code)
   return (sort.value === 'change' ? (b.change ?? -Infinity) - (a.change ?? -Infinity) : (b.analysis.score ?? -Infinity) - (a.analysis.score ?? -Infinity)) || a.stock.code.localeCompare(b.stock.code)
 }))
-watch(rows, value => { if (!value.some(row => row.stock.code === selected.value)) selected.value = value.find(row => row.stock.candles.length)?.stock.code ?? value[0]?.stock.code ?? '' }, { immediate: true })
-const detail = computed(() => rows.value.find(row => row.stock.code === selected.value))
-const indicators = computed(() => detail.value?.analysis.indicators ?? {})
+watch(visible, value => { if (!value.some(row => row.stock.code === selected.value)) selected.value = value[0]?.stock.code ?? '' }, { immediate: true })
+watch(sort, () => { selected.value = visible.value[0]?.stock.code ?? '' })
+const detail = computed(() => visible.value.find(row => row.stock.code === selected.value))
+const indicators = computed(() => (detail.value?.analysis.indicators ?? {}) as Record<string, number | null>)
+const signalPage=ref(1)
+const allSignals=computed(()=>[...(detail.value?.analysis.strategy_history??detail.value?.analysis.history??[])].reverse())
+const signalSlice=computed(()=>allSignals.value.slice((signalPage.value-1)*10,signalPage.value*10))
+watch(selected,()=>{signalPage.value=1})
+watch(allSignals,()=>{signalPage.value=Math.min(signalPage.value,Math.max(1,Math.ceil(allSignals.value.length/10)))})
 const plan = computed(() => detail.value?.analysis.plan)
 const totalPnl = computed(() => {
   const equity = numeric(props.snapshot?.portfolio.equity), initial = numeric(props.snapshot?.portfolio.initial_cash)
@@ -40,11 +47,14 @@ const totalPnl = computed(() => {
         <div class="panel-footer"><span>{{ visible.length }} 只股票 · 点击行查看研究依据</span><span class="muted">人民币 · 日线</span></div>
       </section>
       <section class="panel detail-panel"><div class="panel-heading detail-heading"><div><div class="eyebrow">{{ detail ? `${detail.stock.code} · ${exchangeName(detail.stock.exchange)} · ${detail.stock.sector || '日线研究'}` : 'DAILY CHART' }}</div><h2>{{ detail?.stock.name ?? '暂无观察股票' }}</h2></div><div class="detail-price"><strong>{{ fmt(detail?.price) }}</strong><span :class="color(detail?.change)">{{ pct(detail?.change) }} 日涨跌</span></div></div>
-        <StockChart :candles="detail?.stock.candles ?? []"/>
+        <StockChart :candles="detail?.stock.candles ?? []" :series="detail?.analysis.chart_series"/>
         <div class="chart-disclaimer">{{ snapshot?.app.mode === 'demo' ? '合成行情 · 非真实股价' : `${detail?.stock.adjustment === 'qfq' ? '前复权分析日线' : '日线行情'} · 不是盘中实时成交价` }} · 数据截至 {{ detail?.stock.data_date ?? '—' }}</div>
-        <div class="indicator-grid"><div><span>EMA 20</span><strong>{{ fmt(indicators.ema20) }}</strong></div><div><span>RSI 14</span><strong>{{ fmt(indicators.rsi14, 1) }}</strong></div><div><span>MACD 柱</span><strong :class="color(indicators.macd_hist)">{{ signed(indicators.macd_hist, 3) }}</strong></div></div>
+        <div class="indicator-grid"><div><span>EMA 20</span><strong>{{ fmt(indicators.ema20) }}</strong></div><div><span>EMA 60</span><strong>{{ fmt(indicators.ema60) }}</strong></div><div><span>ATR 14</span><strong>{{ fmt(indicators.atr14, 3) }}</strong></div><div><span>量比（前20日）</span><strong>{{ fmt(indicators.volume_ratio, 2) }}</strong></div><div><span>距 EMA20</span><strong>{{ pct(indicators.ema20_distance_pct) }}</strong></div><div><span>RSI 14</span><strong>{{ fmt(indicators.rsi14, 1) }}</strong></div><div><span>MACD 柱</span><strong :class="color(indicators.macd_hist)">{{ signed(indicators.macd_hist, 3) }}</strong></div></div>
         <div class="analysis-summary"><div class="summary-label"><span>研究判断</span><span class="badge" :class="detail?.analysis.status ?? 'neutral'">{{ detail ? statusNames[detail.analysis.status] : '等待数据' }}</span></div><p>{{ detail?.analysis.route ? (routeNames[detail.analysis.route] ?? detail.analysis.route) + '：' : '' }}{{ detail?.stock.error || detail?.analysis.reasons.join('；') || '暂无可用研究判断。' }}</p></div>
         <div class="scenario"><div class="summary-label"><span>研究情景</span><span class="muted">非订单、非收益承诺</span></div><div class="scenario-grid"><div><span>参考价</span><strong>{{ fmt(plan?.reference_price) }}</strong></div><div><span>风险参考</span><strong>{{ fmt(plan?.stop_price) }}</strong></div><div><span>目标参考</span><strong>{{ fmt(plan?.target_price) }}</strong></div></div><p v-if="plan">{{ plan.note || '用于比较潜在上行与下行的研究情景，不保证触及这些价格。' }} 目标距离 {{ pct(plan.expected_gain_pct) }} · 风险距离 {{ fmt(Math.abs(plan.risk_pct)) }}%</p><p v-else>数据或条件不足，暂不生成情景价格。此处为空不代表系统会自动下单。</p></div>
+        <section v-if="detail?.analysis.score_components?.length" class="score-breakdown"><h2>评分拆解 <small>{{ detail.analysis.strategy_version }}</small></h2><div v-for="item in detail.analysis.score_components" :key="item.key" class="score-part"><span>{{ item.label }}<small>{{ item.rule }}</small></span><strong>{{ item.score }} / {{ item.max_score }}</strong></div></section>
+        <section v-if="detail?.analysis.strategy_results?.length" class="score-breakdown"><h2>各策略判断</h2><details v-for="item in detail.analysis.strategy_results" :key="item.id"><summary>{{ item.name }} <span class="badge" :class="item.matched ? 'watch' : 'wait'">{{ !item.enabled ? '未启用' : item.matched ? '条件满足' : '等待条件' }}</span></summary><p>{{ item.reasons.join('；') }}</p><ul><li v-for="check in item.checks" :key="check.label">{{ check.passed ? '✓' : '○' }} {{ check.label }}</li></ul></details></section>
+        <section class="score-breakdown"><h2>历史信号 <span class="muted">仅记录条件首次满足</span></h2><div class="table-wrap signal-history"><table><thead><tr><th>日期</th><th>策略</th><th class="num">评分</th><th class="num">当日收盘</th></tr></thead><tbody><tr v-for="(event, i) in signalSlice" :key="i"><td>{{ event.date }}</td><td>{{ 'strategy_id' in event ? event.name : event.route || '趋势观察' }}</td><td class="num">{{ event.score }}</td><td class="num">{{ fmt(event.close) }}</td></tr><tr v-if="!detail?.analysis.strategy_history?.length && !detail?.analysis.history?.length"><td colspan="4" class="empty">这段日线没有有效信号，或预热数据不足。</td></tr></tbody></table></div><div class="panel-footer"><span>共 {{ allSignals.length }} 条 · 每页 10 条</span><Pagination :page="signalPage" :pages="Math.max(1,Math.ceil(allSignals.length/10))" label="股票历史信号分页" @change="signalPage=$event"/></div><p class="form-help">历史信号不是成交记录；转到策略回放，查看下一交易日撮合和费用后的结果。</p></section>
       </section>
     </div>
     <div class="research-notes"><span class="note-icon">◎</span><div><strong>先验证，再决定</strong><p>示例策略只用于研究。评分、技术指标和情景目标不能保证盈利；真实成交还受交易制度、停牌、流动性和费用影响。</p></div><a href="#settings">查看规则 →</a></div>

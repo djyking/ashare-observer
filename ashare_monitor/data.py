@@ -65,7 +65,12 @@ def security_info(code: str) -> dict:
 
 
 def validate_candles(rows: list[dict], as_of: str | None = None) -> list[dict]:
-    """Reject malformed input instead of sorting, filling gaps, or inventing bars."""
+    """Reject malformed input; validate closures only in verified calendar years.
+
+    Older history is retained for research; adapters disclose unverified years
+    separately and simulation continues to reject those calendar years.
+    """
+    from .rules import CALENDAR_YEARS, is_trading_day
     if not isinstance(rows, list):
         raise ValueError("日线必须是记录列表")
     limit = _parse_date(as_of) if as_of is not None else None
@@ -81,6 +86,8 @@ def validate_candles(rows: list[dict], as_of: str | None = None) -> list[dict]:
             raise ValueError("日线包含观察日期之后的数据")
         if current.weekday() >= 5:
             raise ValueError("普通 A 股日线不能是周末日期")
+        if current.year in CALENDAR_YEARS and not is_trading_day(current):
+            raise ValueError(f"{current.isoformat()} 是已核实的交易所休市日，不能包含普通 A 股日线")
         parsed = {"date": current.isoformat()}
         for field in ("open", "high", "low", "close", "volume", "amount"):
             try:
@@ -253,8 +260,8 @@ def load_market(mode: str, codes: list[str], as_of: str, csv_dir: str | Path | N
     if mode not in {"demo", "eastmoney", "csv"}:
         raise ValueError("不支持的数据模式")
     _parse_date(as_of)
-    if not isinstance(codes, (list, tuple)) or not codes or len(codes) > 30:
-        raise ValueError("观察列表需要 1 至 30 个股票代码")
+    if not isinstance(codes, (list, tuple)) or not codes or len(codes) > 100:
+        raise ValueError("观察列表需要 1 至 100 个股票代码")
     if len(set(codes)) != len(codes):
         raise ValueError("观察列表股票代码不得重复")
     for code in codes:
@@ -276,6 +283,14 @@ def load_market(mode: str, codes: list[str], as_of: str, csv_dir: str | Path | N
             stock = security_info(code)
             stock.update(mode=mode, error=_public_error(exc))
         stock["as_of"] = as_of
+        from .rules import CALENDAR_YEARS
+        unverified_years = sorted({int(row["date"][:4]) for row in stock.get("candles", [])} - CALENDAR_YEARS)
+        stock["calendar_verified"] = not unverified_years
+        stock["calendar_unverified_years"] = unverified_years
+        if unverified_years:
+            stock.setdefault("limitations", []).append(
+                "以下年份交易日历未核实，只检查周末与行情格式，不能用于当前模拟撮合：" +
+                "、".join(map(str, unverified_years)))
         stock["stale"] = bool(stock.get("data_date") and stock["data_date"] < as_of)
         stock["stale_as_of"] = as_of if stock["stale"] else None
         if stock["stale"]:

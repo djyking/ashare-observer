@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ashare_monitor.analysis import analyze_stock, atr, ema, rsi
+from ashare_monitor.rules import is_trading_day
 from ashare_monitor.data import (DEFAULT_WATCHLIST, _csv_stock, _eastmoney_stock,
                                  load_market, security_info, validate_candles)
 
@@ -19,7 +20,7 @@ def candle(day="2026-10-12", price=10):
 def series(count=120):
     result, day = [], date(2025, 1, 2)
     while len(result) < count:
-        if day.weekday() < 5:
+        if is_trading_day(day):
             result.append(candle(day.isoformat(), 20 + len(result) * 0.05 + math.sin(len(result) / 5) * 0.5))
         day += timedelta(days=1)
     return result
@@ -52,6 +53,20 @@ class ValidationTests(unittest.TestCase):
     def test_future_bar_is_rejected(self):
         with self.assertRaises(ValueError):
             validate_candles([candle("2026-10-13")], "2026-10-12")
+
+    def test_verified_holiday_is_rejected_unknown_year_is_disclosed(self):
+        with self.assertRaisesRegex(ValueError, "休市日"):
+            validate_candles([candle("2026-10-01")])
+        # Old research history remains readable; this is not a verified session.
+        self.assertEqual(validate_candles([candle("2024-10-01")])[0]["date"], "2024-10-01")
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "600519.csv").write_text("date,open,high,low,close,volume,adjustment\n2024-10-01,10,11,9,10,100,none\n", encoding="utf-8")
+            with patch("ashare_monitor.rules.last_closed_day", return_value="2026-10-12"):
+                market = load_market("csv", ["600519"], "2026-10-12", root)
+        stock = market["stocks"][0]
+        self.assertFalse(stock["calendar_verified"])
+        self.assertEqual(stock["calendar_unverified_years"], [2024])
+        self.assertTrue(any("未核实" in item for item in stock["limitations"]))
 
     def test_zero_volume_valid_but_price_zero_invalid(self):
         self.assertEqual(validate_candles([{**candle(), "volume": 0}])[0]["volume"], 0)

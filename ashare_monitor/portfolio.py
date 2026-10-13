@@ -97,6 +97,70 @@ def _validate_date(ledger, value):
     return day
 
 
+def order_preview(ledger, side, code, quantity, day, stocks):
+    """Validate a next-open order without mutating the ledger or reserving cash.
+
+    Today's acquired lots can be reserved for the next session; actual fills
+    independently recheck T+1. Estimates use the signal close, while buys freeze
+    the upper-limit amount to cover the possible next opening price.
+    """
+    result = {"allowed": False, "message": "", "error_code": None, "side": side,
+              "code": code, "quantity": quantity, "board": None, "min_quantity": None,
+              "step": None, "reference_price": None, "estimated_notional": None,
+              "fees": None, "reserved_cash": 0, "available_cash": None,
+              "sellable_now": 0, "sellable_on_execution": 0, "execute_after": None,
+              "limit_price": None, "slippage_bps": 0,
+              "quantity_rule": "买入按板块最低股数与申报步长；卖出需满足可卖余额及零股一次卖出规则。",
+              "notice": "按本日收盘估算金额与费用；次日开盘撮合，开盘价可能不同；滑点假设为 0。"}
+    try:
+        _check_ledger(ledger)
+        day = _validate_date(ledger, day)
+        result["available_cash"] = float(Decimal(ledger["cash"]) - _frozen_cash(ledger))
+        if side not in ("buy", "sell"):
+            raise ValueError("方向必须为 buy 或 sell")
+        stock = _index(stocks).get(code)
+        if stock is None:
+            raise ValueError("股票不在当前观察列表")
+        result.update(board=stock.get("board"), min_quantity=200 if stock.get("board") == "star" else 100,
+                      step=100 if stock.get("board") in ("main", "growth") else 1)
+        ensure_ordinary_stock(stock, day)
+        if stock.get("status") in ("suspended", "unavailable", "error", "delisted"):
+            raise ValueError("股票停牌或行情不可用，不接受新模拟委托")
+        bars = valid_raw_candles(stock)
+        if day not in bars or bars[day]["volume"] <= 0:
+            raise ValueError("缺少信号日期的有效不复权日线")
+        execute_after = next_trading_day(day)
+        position = ledger["positions"].get(code, {"lots": []})
+        frozen = _frozen_shares(ledger, code)
+        available = max(0, _sellable(position, execute_after) - frozen)
+        result.update(execute_after=execute_after,
+                      sellable_now=max(0, _sellable(position, day) - frozen),
+                      sellable_on_execution=available, reference_price=float(bars[day]["close"]))
+        if side == "sell":
+            minimum = 200 if stock["board"] == "star" else 100
+            result["step"] = 1
+            result["min_quantity"] = (min(100, available % 100 or 100) if stock["board"] in ("main", "growth")
+                                      else min(minimum, available)) if available else None
+        quantity = validate_quantity(stock["board"], side, quantity, available)
+        result["quantity"] = quantity
+        upper, lower = limit_prices(bars[day]["close"], stock["board"])
+        notional = money(bars[day]["close"] * quantity)
+        result.update(estimated_notional=float(notional),
+                      fees={key: float(value) for key, value in fee_breakdown(notional, side).items()},
+                      limit_price=float(upper if side == "buy" else lower))
+        if side == "buy":
+            reserved = money(upper * quantity) + fee_breakdown(upper * quantity, "buy")["total"]
+            result["reserved_cash"] = float(reserved)
+            if reserved > Decimal(ledger["cash"]) - _frozen_cash(ledger):
+                raise ValueError(f"可用资金不足，含费用需冻结 {reserved:.2f} 元")
+        if sum(order["status"] == "pending" for order in ledger["orders"]) >= 100:
+            raise ValueError("最多同时保留 100 笔待成交模拟委托")
+        result.update(allowed=True, message="预检查通过，委托将在下一交易日开盘尝试撮合。")
+    except (ValueError, TypeError, KeyError) as exc:
+        result.update(error_code="invalid_order", message=str(exc) if isinstance(exc, ValueError) else "委托或账本字段无效")
+    return result
+
+
 def place_order(ledger, side, code, quantity, trade_date, stocks, request_id):
     _check_ledger(ledger)
     if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 128:
@@ -107,39 +171,20 @@ def place_order(ledger, side, code, quantity, trade_date, stocks, request_id):
             if (order["side"], order["code"], str(order["quantity"]), order["created_date"]) != (side, code, str(quantity), trade_date):
                 raise ValueError("request_id 已用于不同委托")
             return deepcopy(ledger)
-    day = _validate_date(ledger, trade_date)
-    if side not in ("buy", "sell"):
-        raise ValueError("方向必须为 buy 或 sell")
-    if sum(order["status"] == "pending" for order in ledger["orders"]) >= 100:
-        raise ValueError("最多同时保留 100 笔待成交模拟委托")
-    stock = _index(stocks).get(code)
-    if stock is None:
-        raise ValueError("股票不在当前观察列表")
-    ensure_ordinary_stock(stock, day)
-    if stock.get("status") in ("suspended", "unavailable", "error", "delisted"):
-        raise ValueError("股票停牌或行情不可用，不接受新模拟委托")
-    bars = valid_raw_candles(stock)
-    if day not in bars or bars[day]["volume"] <= 0:
-        raise ValueError("缺少信号日期的有效不复权日线")
-    execute_after = next_trading_day(day)
-    position = ledger["positions"].get(code, {"lots": []})
-    available = max(0, _sellable(position, day) - _frozen_shares(ledger, code))
-    quantity = validate_quantity(stock["board"], side, quantity, available)
-    upper, lower = limit_prices(bars[day]["close"], stock["board"])
-    reserved = Decimal(0)
-    if side == "buy":
-        # Freeze the worst permissible fill, including fee, not just last close.
-        reserved = money(upper * quantity) + fee_breakdown(upper * quantity, "buy")["total"]
-        if reserved > Decimal(ledger["cash"]) - _frozen_cash(ledger):
-            raise ValueError(f"可用资金不足，含费用需冻结 {reserved:.2f} 元")
+    preview = order_preview(ledger, side, code, quantity, trade_date, stocks)
+    if not preview["allowed"]:
+        raise ValueError(preview["message"])
+    day = parse_date(trade_date).isoformat()
+    stock = _index(stocks)[code]
+    execute_after, quantity = preview["execute_after"], preview["quantity"]
     result = deepcopy(ledger)
     result["as_of"] = day
     result["orders"].append({
         "id": f"paper-{len(result['orders']) + 1}", "request_id": request_id,
         "side": side, "code": code, "name": stock.get("name", code), "quantity": quantity,
         "status": "pending", "created_date": day, "execute_after": execute_after,
-        "limit_price": _stored(upper if side == "buy" else lower),
-        "reserved_cash": _stored(reserved), "last_checked_date": None,
+        "limit_price": _stored(preview["limit_price"]),
+        "reserved_cash": _stored(preview["reserved_cash"]), "last_checked_date": None,
         "reason": "等待下一交易日开盘；仅当日有效；停牌、缺数据或涨跌停不假定成交",
     })
     return result
@@ -242,7 +287,7 @@ def _try_fill(ledger, order, stock, bars, day):
     ledger["fees"] = _stored(Decimal(ledger["fees"]) + fee)
     order.update(status="filled", filled_date=day, filled_price=_stored(opening),
                  reserved_cash="0.00", reason="后续交易日开盘模拟成交，不代表实际可成交保证")
-    ledger["trades"].append({"order_id": order["id"], "date": day, "side": side,
+    ledger["trades"].append({"id": f"fill-{len(ledger['trades']) + 1}", "order_id": order["id"], "date": day, "side": side,
                              "code": code, "name": stock.get("name", code), "quantity": quantity,
                              "price": _stored(opening), "notional": _stored(notional),
                              "fee": _stored(fee), "pnl": _stored(pnl),
@@ -289,7 +334,7 @@ def advance_ledger(ledger, stocks, trade_date):
     return result
 
 
-def portfolio_view(ledger, stocks, trade_date):
+def portfolio_view(ledger, stocks, trade_date, include_records=True):
     _check_ledger(ledger)
     day = parse_date(trade_date).isoformat()
     stock_index = _index(stocks)
@@ -320,6 +365,7 @@ def portfolio_view(ledger, stocks, trade_date):
         frozen = _frozen_shares(ledger, code)
         positions.append({"code": code, "name": position.get("name", code), "quantity": quantity,
                           "sellable": max(0, _sellable(position, day) - frozen), "frozen": frozen,
+                          "sellable_on_execution": max(0, _quantity(position) - frozen),
                           "avg_cost": float(cost / quantity), "last_price": float(price) if price is not None else None,
                           "price_date": valued_at, "price_stale": valued_at != day,
                           "market_value": float(value) if value is not None else None,
@@ -331,8 +377,11 @@ def portfolio_view(ledger, stocks, trade_date):
               "realized_pnl": float(ledger["realized_pnl"]),
               "unrealized_pnl": float(unrealized) if prices_complete else None,
               "fees": float(ledger["fees"]), "positions": positions,
-              "orders": deepcopy(ledger["orders"]), "trades": deepcopy(ledger["trades"]),
+              "orders": deepcopy(ledger["orders"]) if include_records else [],
+              "trades": deepcopy(ledger["trades"]) if include_records else [],
+              "order_count": len(ledger["orders"]), "trade_count": len(ledger["trades"]),
               "fee_assumptions": deepcopy(FEE_ASSUMPTIONS), "as_of": ledger.get("as_of"),
+              "slippage_bps": 0,
               "valuation_complete": prices_complete,
               "notice": "仅离线演示；日线信号在下一交易日开盘模拟撮合，当日未成交委托失效；T+1；费用为教学假设，不模拟分红送转、盘后交易与逐笔排队。"}
     for trade in result["trades"]:

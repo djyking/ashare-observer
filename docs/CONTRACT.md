@@ -8,7 +8,9 @@ Python 3.12 后端仅使用标准库，前端使用 Vue 3、TypeScript 和 Vite�
 
 股票结构 `{code,name,exchange,board,sector,status,error,data_date,candles,raw_candles,adjustment,risk_warning,listing_date,metadata_verified}`。board 为 `main/growth/star/beijing`。candles 为分析日线（真实模式前复权），raw_candles 为同日期不复权日线；演示模式均为 none。日线 `{date,open,high,low,close,volume,amount}`，金额人民币元、数量股。无可靠不复权数据不得模拟成交。需验证日期、价格、非有限数、重复、OHLC及成交量。listing_date 未知则 None，禁止据此断言非新股。
 
-`analysis.py`: `analyze_stock(stock)` 返回 `{code,name,score,status,route,reasons,indicators,plan,history}`，status 为 `watch/wait/insufficient/unavailable`，不是买入授权或盈利概率。plan 可空，否则 `{reference_price,stop_price,target_price,expected_gain_pct,risk_pct}` 必须明确仅研究情景，真实qfq不能作为当前可成交原价。history 可列观察信号；先不做真实账户或宣称获利。指标使用闭合日线。
+`analysis.py`: `analyze_stock(stock, config=None)` 返回 `{code,name,score,status,route,reasons,indicators,plan,history,chart_series,score_components,strategy_results,strategy_history,strategy_version}`。status 为 `watch/wait/insufficient/unavailable`，不是买入授权或盈利概率。plan 可空，否则 `{reference_price,stop_price,target_price,expected_gain_pct,risk_pct}` 必须明确仅研究情景，真实 qfq 不能作为当前可成交原价。图表直接使用后端 chart_series，与评分共用 EMA 初始化和指标序列。历史信号只使用该日及之前资料。
+
+`strategies.py`: `strategy_catalog()` 返回三类公开策略、参数说明、范围和 defaults；`normalize_strategy_config()` 校验并补全 `teaching/pullback/breakout` 配置。策略启用与否决定候选分类，不伪装为盈利概率。
 
 ## 日历与模拟账本
 
@@ -58,4 +60,20 @@ settings 为 `{mode,watchlist,refresh_seconds,initial_cash,auto_refresh}`。
 
 TypeScript 类型对应 HTTP 契约，不改变 Python 对资金、数量、日历与请求参数的最终校验。Vite 开发代理转发到本机 Python 服务；生产环境直接同源请求，后端仍保留 Host、Origin 与 CSRF 校验。
 
-页面有概览/观察列表、单股K线与指标、模拟持仓/委托/成交、研究历史分页、设置与规则说明。演示数据与真实行情显著区分，红涨绿跌。筛选排序不能扰乱输入编辑。
+页面有概览/观察列表、单股 K 线与指标、模拟持仓/委托/成交、独立历史策略研究、扫描历史、设置与规则说明。演示数据与真实行情显著区分，红涨绿跌。筛选排序不能扰乱输入编辑。
+
+## 1.2 新增与调整
+
+- `GET /api/state` 为精简快照：不返回股票 raw_candles 及完整账本 orders/trades；portfolio 增加 order_count/trade_count。包含当前 paper_experiment 和 research_busy。Python `snapshot(token)` 默认完整，HTTP 使用 compact=True。
+- `GET /api/paper/records?kind=orders|trades&page=1` 在后端按时间倒序切片，每页 30 条，结构 `{items,total,page,pages,page_size}`。
+- `POST /api/paper/preview {side,code,quantity}` 返回 allowed/message、股数规则、参考价、费用、预留资金、当前及执行日可卖数量；不修改账本。预览与提交共用校验，执行时再按实际日线复核。
+- `GET /api/strategies` 返回目录。settings 增加 strategy_config、watchlist_groups；股票池 1～50 只，分组最多 20 组，每组至多 50 个代码。保存后重新后台分析。
+- `GET /api/stocks/search?q=` 提供代码/名称搜索；`GET /api/stocks/templates` 返回 `{items}`。目录记录不代表交易元数据已核实。
+- `GET /api/imports/template` 返回 UTF-8 CSV 示例。`POST /api/imports/validate {code,text}` 返回 valid/errors/warnings 及日期范围；`POST /api/imports/commit {code,text,overwrite?}` 校验后原子写入 `var/imports/<code>.csv`。上限 1 MB，不接受调用方文件路径；不同内容覆盖须显式请求。导入不切换当前数据源、不改变账户。
+- `GET /api/history/{id}` 返回历史摘要及 `details`：当时的策略配置、股票元数据和分析结果。旧版本只有摘要时 details=null；不会拿今天的分析冒充历史快照。
+- `POST /api/demo/experiments {name,initial_cash,start_date}` 原子归档旧演示账本并创建新账本，202 后后台扫描。`GET /api/demo/experiments?page=1` 返回归档摘要，`GET /api/demo/experiments/{id}` 返回 report.portfolio、report.ledger、report.demo_date。演示日期限制在已知日历内。
+- `POST /api/research {name,mode,codes,...config}` 创建独立后台回放，返回 202 `{id,status,accepted}`。config 见 [研究契约](RESEARCH.md)。一次一个研究任务，运行中重复提交返回 409。研究采用自己的来源和股票池，不更改观察列表、数据模式或手动账本。
+- `GET /api/research?page=1` 返回每页 30 条摘要，SQL 层裁剪完整 report/dataset；`GET /api/research/{id}` 返回配置、状态、report 或 error，不传完整输入 dataset。输入数据在本机数据库保存，报告保留 SHA-256 数据标识。
+- `POST /api/research/{id}/archive {}` 只标记完成/失败实验归档，不删除结果。进程重新启动时，遗留 running 研究标记失败并说明中断，不永久显示运行中。
+
+历史回放与手动演示账本完全独立。历史原价缺失、未知日历或公司行动无法准确处理时，必须拒绝成交或明确降低报告可信度；不得声称接入了实时券商、真实下单或证明了获利能力。

@@ -8,6 +8,8 @@ import secrets
 from .runtime import BusyError
 from .brokers import BrokerGateway, BrokerError
 from .storage import encode
+from .strategies import strategy_catalog
+from .market_tools import search_securities, watchlist_templates, csv_template
 
 WEB = Path(__file__).parent / "web"
 
@@ -34,7 +36,7 @@ class DashboardServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AShareDashboard/1.1"
+    server_version = "AShareDashboard/1.2"
 
     def log_message(self, _fmt, *_args):
         # No posted account-like information or arbitrary query text in logs.
@@ -64,14 +66,35 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": "请求主机不受支持。"})
         url = urlsplit(self.path)
         try:
+            query = parse_qs(url.query)
+            parts = url.path.strip("/").split("/")
+            runtime = self.server.runtime
             if url.path == "/api/state":
-                return self._send(200, self.server.runtime.snapshot(self.server.token))
+                return self._send(200, runtime.snapshot(self.server.token, compact=True))
             if url.path == "/api/health":
                 return self._send(200, {"application": "ashare-observer", "status": "ok"})
             if url.path == "/api/history":
-                query = parse_qs(url.query)
-                return self._send(200, self.server.runtime.store.history(
+                return self._send(200, runtime.store.history(
                     int(query.get("page", [1])[0]), int(query.get("page_size", [30])[0])))
+            if len(parts) == 3 and parts[:2] == ["api", "history"]:
+                return self._send(200, runtime.store.history_detail(parts[2]))
+            if url.path == "/api/strategies":
+                return self._send(200, strategy_catalog())
+            if url.path == "/api/stocks/search":
+                return self._send(200, search_securities(query.get("q", [""])[0]))
+            if url.path == "/api/stocks/templates":
+                return self._send(200, {"items": watchlist_templates()})
+            if url.path == "/api/imports/template":
+                return self._send(200, csv_template().encode("utf-8-sig"), "text/csv; charset=utf-8")
+            if url.path == "/api/paper/records":
+                return self._send(200, runtime.paper_records(query.get("kind", ["orders"])[0], query.get("page", [1])[0]))
+            if url.path in {"/api/research", "/api/demo/experiments"}:
+                kind = "research" if url.path == "/api/research" else "demo"
+                return self._send(200, runtime.store.experiments(kind, query.get("page", [1])[0]))
+            if len(parts) == 3 and parts[:2] == ["api", "research"]:
+                return self._send(200, runtime.research_detail(parts[2]))
+            if len(parts) == 4 and parts[:3] == ["api", "demo", "experiments"]:
+                return self._send(200, runtime.store.experiment(parts[3], "demo"))
             if url.path == "/api/brokers":
                 return self._send(200, self.server.brokers.catalog())
             parts = url.path.strip("/").split("/")
@@ -97,6 +120,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, {"error": "页面或接口不存在。"})
         except BrokerError as exc:
             return self._send(exc.status_code, {"error": exc.public_message, "code": exc.code})
+        except KeyError as exc:
+            return self._send(404, {"error": str(exc)[:180]})
         except (ValueError, TypeError):
             return self._send(400, {"error": "请求参数无效。"})
         except Exception:
@@ -130,15 +155,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self._reject_post(415, "需要 JSON 请求。")
         try:
+            path = urlsplit(self.path).path
             length = int(self.headers.get("Content-Length", "0"))
-            if not 2 <= length <= 16384 or self.headers.get("Transfer-Encoding"):
+            maximum = 2_000_000 if path in {"/api/imports/validate", "/api/imports/commit"} else 16384
+            if not 2 <= length <= maximum or self.headers.get("Transfer-Encoding"):
                 raise ValueError("请求体大小无效。")
             self.connection.settimeout(10)
             payload = json.loads(self.rfile.read(length), object_pairs_hook=unique_object,
                                  parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("非法数值")))
             if not isinstance(payload, dict):
                 raise ValueError("请求体需要对象。")
-            path = urlsplit(self.path).path
             runtime = self.server.runtime
             if path in {"/api/refresh", "/api/demo/advance"}:
                 if payload:
@@ -150,7 +176,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, runtime.paper_order(payload))
             if path == "/api/paper/cancel":
                 return self._send(200, runtime.cancel(payload))
+            if path == "/api/paper/preview":
+                return self._send(200, runtime.preview_order(payload))
+            if path == "/api/demo/experiments":
+                return self._send(202, runtime.new_demo_experiment(payload))
+            if path in {"/api/imports/validate", "/api/imports/commit"}:
+                return self._send(200, runtime.import_csv(payload, commit=path.endswith("commit")))
+            if path == "/api/research":
+                return self._send(202, runtime.start_research(payload))
             parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "research"] and parts[3] == "archive":
+                if payload:
+                    raise ValueError("归档操作不接受额外配置。")
+                item = runtime.store.experiment(parts[2], "research")
+                if item["status"] == "running":
+                    raise BusyError("运行中的实验暂不能归档。")
+                runtime.store.update_experiment(parts[2], {"archived": True})
+                return self._send(200, {"ok": True, "id": parts[2], "archived": True})
             if len(parts) == 4 and parts[:2] == ["api", "brokers"] and parts[3] in {"orders", "cancel"}:
                 operation = "place_order" if parts[3] == "orders" else "cancel_order"
                 return self._send(200, getattr(self.server.brokers, operation)(parts[2], payload))

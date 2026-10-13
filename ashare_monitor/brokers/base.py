@@ -31,6 +31,15 @@ class BrokerError(Exception):
         super().__init__(self.public_message)
 
 
+class PaperValidationError(BrokerError):
+    """Application-owned validation text, never created from a broker SDK."""
+
+    def __init__(self, message):
+        super().__init__("invalid_request")
+        self.public_message = str(message)[:300]
+        self.args = (self.public_message,)
+
+
 @dataclass(frozen=True)
 class BrokerStatus:
     connected: bool

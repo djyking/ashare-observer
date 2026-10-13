@@ -53,17 +53,19 @@ class RuntimeTests(unittest.TestCase):
         view = self.runtime.snapshot("x")["portfolio"]
         self.assertEqual(view["positions"][0]["quantity"], 100)
         self.assertEqual(view["positions"][0]["sellable"], 0)
-        with self.assertRaises(ValueError):
-            self.runtime.paper_order({**order, "side": "sell", "request_id": "test-sell-day0"})
-        self.runtime.request_refresh(advance=True)
-        wait_idle(self.runtime)
-        self.assertEqual(self.runtime.snapshot("x")["portfolio"]["positions"][0]["sellable"], 100)
+        # Submission after day T closes queues an order for T+1; it must not
+        # force a second idle day before accepting the next-open sell.
+        preview = self.runtime.preview_order({"side": "sell", "code": "600036", "quantity": 100})
+        self.assertTrue(preview["allowed"])
+        self.assertEqual(preview["sellable_now"], 0)
+        self.assertEqual(preview["sellable_on_execution"], 100)
         self.runtime.paper_order({**order, "side": "sell", "request_id": "test-sell-day1"})
         self.runtime.request_refresh(advance=True)
         wait_idle(self.runtime)
         view = self.runtime.snapshot("x")["portfolio"]
         self.assertEqual(view["positions"], [])
         self.assertEqual(len(view["trades"]), 2)
+        self.assertEqual(view["trades"][1]["date"], preview["execute_after"])
         self.assertAlmostEqual(view["cash"] - view["initial_cash"], view["realized_pnl"], places=2)
         restored = Runtime(self.tmp.name)
         self.assertEqual(restored.snapshot("x")["portfolio"]["trades"], view["trades"])

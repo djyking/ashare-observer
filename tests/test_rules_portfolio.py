@@ -7,7 +7,7 @@ from decimal import Decimal
 from ashare_monitor.rules import (is_trading_day, last_closed_day, limit_prices,
                                   market_session, next_trading_day, validate_quantity)
 from ashare_monitor.portfolio import (advance_ledger, cancel_order, fee_breakdown,
-                                     new_ledger, place_order, portfolio_view)
+                                     new_ledger, order_preview, place_order, portfolio_view)
 
 
 def bar(day, opening=10, close=None, volume=1000000):
@@ -110,8 +110,52 @@ class PortfolioTests(unittest.TestCase):
         view = portfolio_view(ledger, [stock()], "2026-10-12")
         self.assertEqual(view["positions"][0]["sellable"], 0)
         self.assertEqual(portfolio_view(ledger, [stock()], "2026-10-13")["positions"][0]["sellable"], 100)
-        with self.assertRaisesRegex(ValueError, "T\\+1"):
-            place_order(ledger, "sell", "600000", 100, "2026-10-12", [stock()], "s0")
+        # A close-time sell can reserve today's acquired shares for T+1 open.
+        ledger = place_order(ledger, "sell", "600000", 100, "2026-10-12", [stock()], "s0")
+        self.assertEqual(ledger["orders"][-1]["execute_after"], "2026-10-13")
+        self.assertEqual(len(advance_ledger(ledger, [stock()], "2026-10-12")["trades"]), 1)
+        ledger = advance_ledger(ledger, [stock()], "2026-10-13")
+        self.assertEqual(len(ledger["trades"]), 2)
+        self.assertEqual(ledger["positions"], {})
+
+    def test_preview_is_readonly_and_explains_money_quantity_and_t1(self):
+        ledger = new_ledger(500)
+        original = deepcopy(ledger)
+        preview = order_preview(ledger, "buy", "600000", 100, "2026-10-09", [stock()])
+        self.assertFalse(preview["allowed"])
+        self.assertIn("1105.01", preview["message"])
+        self.assertEqual(preview["estimated_notional"], 1000)
+        self.assertEqual(preview["fees"]["total"], 5.01)
+        self.assertEqual(preview["available_cash"], 500)
+        self.assertEqual(preview["execute_after"], "2026-10-12")
+        self.assertEqual(ledger, original)
+        preview = order_preview(ledger, "buy", "600000", 1, "2026-10-09", [stock()])
+        self.assertIn("100 股", preview["message"])
+        filled = advance_ledger(buy(), [stock()], "2026-10-12")
+        preview = order_preview(filled, "sell", "600000", 100, "2026-10-12", [stock()])
+        self.assertTrue(preview["allowed"])
+        self.assertEqual(preview["sellable_now"], 0)
+        self.assertEqual(preview["sellable_on_execution"], 100)
+        reserved = place_order(filled, "sell", "600000", 100, "2026-10-12", [stock()], "s1")
+        self.assertFalse(order_preview(reserved, "sell", "600000", 100, "2026-10-12", [stock()])["allowed"])
+
+    def test_actual_fill_rechecks_t_plus_one_even_with_tampered_pending_order(self):
+        ledger = advance_ledger(buy(), [stock()], "2026-10-12")
+        ledger = place_order(ledger, "sell", "600000", 100, "2026-10-12", [stock()], "s1")
+        ledger["orders"][-1]["execute_after"] = "2026-10-12"
+        advanced = advance_ledger(ledger, [stock()], "2026-10-12")
+        self.assertEqual(len(advanced["trades"]), 1)
+        self.assertEqual(advanced["orders"][-1]["status"], "rejected")
+        self.assertIn("T+1", advanced["orders"][-1]["reason"])
+
+    def test_compact_view_preserves_counts_without_copying_records(self):
+        ledger = advance_ledger(buy(), [stock()], "2026-10-12")
+        view = portfolio_view(ledger, [stock()], "2026-10-12", include_records=False)
+        self.assertEqual((view["order_count"], view["trade_count"]), (1, 1))
+        self.assertEqual(view["orders"], [])
+        self.assertEqual(view["trades"], [])
+        self.assertEqual(view["positions"][0]["sellable_on_execution"], 100)
+        self.assertEqual(view["slippage_bps"], 0)
 
     def test_complete_roundtrip_and_fee_conservation(self):
         ledger = advance_ledger(buy(), [stock()], "2026-10-12")
