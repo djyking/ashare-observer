@@ -62,6 +62,14 @@ TypeScript 类型对应 HTTP 契约，不改变 Python 对资金、数量、日�
 
 页面有概览/观察列表、单股 K 线与指标、模拟持仓/委托/成交、独立历史策略研究、扫描历史、设置与规则说明。演示数据与真实行情显著区分，红涨绿跌。筛选排序不能扰乱输入编辑。
 
+## 1.3 网页连接生命周期
+
+`GET /api/broker/connection` 返回注册驱动及字段 schema、脱敏配置与连接状态。`POST /api/broker/connection/save` 接受 `{driver, fields, secrets}`，只允许该驱动定义的字段；保存后断开旧连接，不自动登录。`POST /api/broker/connection/connect` 与 `/disconnect` 只接受空对象，需要同源与 CSRF 校验。
+
+字段标记为 `secret` 或 `masked` 时仅保存在进程内存中，不写配置文件。账号返回掩码，密码只返回“已提供”的状态，不返回值；断开和服务重启会清除两者。普通配置保存在私有数据目录。成功连接后使用 `state.provider_id` 查询既有 `/api/brokers/{provider}/...` 接口，连接工厂由可信 Python 启动代码注册，不能通过 HTTP 导入模块。
+
+内置 `demo` 仅通过公开演示凭据连接虚构数据，提供方为 `broker_demo`；`unconfigured` 明确报告缺少真实券商驱动。所有连接会话强制只读，不影响原手动模拟账本。详细错误与扩展约定见 [券商适配指南](BROKER_ADAPTER.md)。
+
 ## 1.2 新增与调整
 
 - `GET /api/state` 为精简快照：不返回股票 raw_candles 及完整账本 orders/trades；portfolio 增加 order_count/trade_count。包含当前 paper_experiment 和 research_busy。Python `snapshot(token)` 默认完整，HTTP 使用 compact=True。

@@ -18,12 +18,17 @@ describe('read-only resource views', () => {
     expect(wrapper.text()).toContain('共 99 条')
     expect(fetch.mock.calls[0][0]).toBe('/api/history?page=1&page_size=30')
   })
-  it('shows unconnected live adapter, exposes no credential input or live order action', async () => {
+  it('loads connection state lazily without automatically connecting or ordering', async () => {
     const capabilities = { account: false, positions: false, orders: false, trades: false, place_order: false, cancel_order: false }
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ live_enabled: false, providers: [{ id: 'live', name: '券商实盘', environment: 'live', connected: false, capabilities, message: '尚未配置' }] })))
-    const wrapper = mount(BrokerAccess, { props: { active: true } }); await flushPromises()
-    expect(wrapper.text()).toContain('券商实盘未连接')
-    expect(wrapper.findAll('input')).toHaveLength(0)
-    expect(wrapper.findAll('button')).toHaveLength(1)
+    const fetch = vi.fn(async (path: string) => response(path === '/api/brokers' ? {live_enabled: false, providers: [{id: 'live', name: '券商实盘', environment: 'live', connected: false, capabilities, message: '尚未配置'}]} : {drivers: [], profile: {driver: 'unconfigured', fields: {}, masked_fields: {}, saved_fields: [], secret_fields_ready: []}, state: {status: 'disconnected', provider_id: null, message: '尚未安装具体适配器', last_checked_at: null}, read_only: true, secrets_persisted: false}))
+    vi.stubGlobal('fetch', fetch)
+    const wrapper = mount(BrokerAccess, {props: {active: false, csrf: 'token'}})
+    expect(fetch).not.toHaveBeenCalled()
+    await wrapper.setProps({active: true}); await flushPromises()
+    expect(wrapper.get('#broker-connection-status').text()).toBe('未连接')
+    expect(wrapper.text()).toContain('真实买卖尚未启用')
+    expect(fetch.mock.calls.map(([path]) => path)).toEqual(['/api/broker/connection', '/api/brokers'])
+    expect(wrapper.find('[aria-label="账户查询结果"]').exists()).toBe(false)
+    wrapper.unmount()
   })
 })

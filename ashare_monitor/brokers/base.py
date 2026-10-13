@@ -19,6 +19,11 @@ ERRORS = {
     "broker_busy": (409, "数据更新中，暂不能修改模拟委托，请稍后重试。"),
     "invalid_request": (400, "委托参数不符合账户规则，请检查代码、股数、交易方向和请求编号。"),
     "broker_failure": (502, "账户接口请求失败；未向页面返回接口内部信息。"),
+    "invalid_connection_config": (400, "连接配置不符合字段要求，请检查券商类型、账号和必填项。"),
+    "connection_credentials_missing": (400, "请填写本次连接所需的账号和密码；重启或断开后需要重新填写密码。"),
+    "connection_auth_failed": (401, "连接验证失败；离线示例仅接受演示账号 demo 和演示密码 demo123。"),
+    "connection_superseded": (409, "连接期间配置已变更或已断开，本次连接结果已丢弃，请重新连接。"),
+    "connection_busy": (409, "正在验证连接，请等待结果或先断开。"),
 }
 
 

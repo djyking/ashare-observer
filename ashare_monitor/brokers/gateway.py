@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import math
 import re
+from threading import RLock
 
 from .adapters import PaperBrokerAdapter, UnconfiguredBrokerAdapter
 from .base import BrokerAdapter, BrokerError, BrokerStatus, PaperValidationError, OPERATIONS
@@ -13,6 +14,7 @@ MESSAGES = {
     "paper_readonly": "模拟账本只读；切回合成演示行情可管理模拟委托。",
     "unconfigured": "券商接入扩展点已预留；尚未安装并验证具体券商适配器。",
     "unavailable": "账户连接暂不可用。",
+    "demo_connection": "离线券商示例：以下均为虚构固定数据，只读；与模拟账本和真实账户无关。",
 }
 ACCOUNT_FIELDS = {
     "currency", "initial_cash", "cash", "available_cash", "frozen_cash", "equity",
@@ -65,6 +67,7 @@ class BrokerGateway:
     """
 
     def __init__(self, runtime):
+        self._lock = RLock()
         self._providers = {}
         self.register("paper", PaperBrokerAdapter(runtime), name="模拟账本", environment="paper")
         self.register("live", UnconfiguredBrokerAdapter(), name="券商实盘", environment="live")
@@ -85,12 +88,14 @@ class BrokerGateway:
             raise ValueError("paper slot cannot contain a live adapter")
         if provider_id == "live" and environment != "live":
             raise ValueError("live slot cannot contain a paper adapter")
-        self._providers[provider_id] = Provider(provider_id, name, environment, adapter)
+        with self._lock:
+            self._providers[provider_id] = Provider(provider_id, name, environment, adapter)
 
     def _provider(self, provider_id):
-        if not isinstance(provider_id, str) or provider_id not in self._providers:
-            raise BrokerError("unknown_provider")
-        return self._providers[provider_id]
+        with self._lock:
+            if not isinstance(provider_id, str) or provider_id not in self._providers:
+                raise BrokerError("unknown_provider")
+            return self._providers[provider_id]
 
     def _status(self, provider):
         try:
@@ -109,7 +114,9 @@ class BrokerGateway:
                     "message": MESSAGES["unavailable"]}
 
     def catalog(self):
-        return {"providers": [self._status(p) for p in self._providers.values()], "live_enabled": False}
+        with self._lock:
+            providers = list(self._providers.values())
+        return {"providers": [self._status(p) for p in providers], "live_enabled": False}
 
     def _invoke(self, provider_id, operation, payload=None):
         provider = self._provider(provider_id)
