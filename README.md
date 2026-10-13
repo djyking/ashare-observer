@@ -11,8 +11,8 @@
 需要 Python 3.12 或更新版本。仓库包含已构建的前端页面，直接运行不需要安装 Node.js，也不需要证券账户或密钥。
 
 ```sh
-git clone https://github.com/djyking/ashare-observer.git
-cd ashare-observer
+git clone https://github.com/djyking/ashare-quant-platform.git
+cd ashare-quant-platform
 python -m ashare_monitor
 ```
 
