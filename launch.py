@@ -41,7 +41,7 @@ def main():
             return 1
     if "--no-browser" not in sys.argv:
         webbrowser.open(URL)
-    print(f"A 股观察台：{URL}")
+    print(f"A 股量化交易研究平台：{URL}")
     return 0
 
 

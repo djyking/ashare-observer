@@ -1,3 +1,3 @@
-"""A-share market research and paper portfolio dashboard."""
+"""A-share quantitative trading research platform."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

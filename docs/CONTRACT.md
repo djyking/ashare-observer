@@ -1,6 +1,6 @@
-# A 股观察台：模块契约
+# A 股量化交易研究平台：模块契约
 
-独立 Python 3.12 项目，仅使用标准库。入口 `python -m ashare_monitor --port 18766`，默认离线演示，不连接证券账户。
+Python 3.12 后端仅使用标准库，前端使用 Vue 3、TypeScript 和 Vite。入口 `python -m ashare_monitor --port 18766`，默认离线演示，未连接证券账户。前端源码位于 `frontend/`，生产资源位于 `ashare_monitor/web/`，由同一个 Python 服务提供。
 
 ## 数据
 
@@ -38,6 +38,24 @@ settings 为 `{mode,watchlist,refresh_seconds,initial_cash,auto_refresh}`。
 
 `POST /api/demo/advance` 空JSON：推进下个交易日、扫描及撮合；后台更新，立即返回202。
 
-所有POST要求 `X-CSRF-Token`，从state读取。固定loopback访问，Origin/Host检查；无真实下单路由。前端不得并发刷新覆写较新的快照。统一错误 `{error}`。
+所有POST要求 `X-CSRF-Token`，从state读取。固定loopback访问，Origin/Host检查；未接通可执行真实下单的通道。前端不得并发刷新覆写较新的快照。统一错误 `{error}`。
+
+## 券商适配接口
+
+`ashare_monitor.brokers` 定义 `BrokerAdapter` 抽象基类、`BrokerGateway` 及 `BrokerError`。`paper` 对接现有模拟账本，`live` 为未连接的实盘适配器；接口形式存在不表示已经接通券商。具体扩展流程见 [券商适配指南](BROKER_ADAPTER.md)。
+
+`GET /api/brokers` 返回 `{providers:[{id,name,environment,connected,capabilities:{account,positions,orders,trades,place_order,cancel_order},message}],live_enabled:false}`。
+
+`GET /api/brokers/{provider}/{account|positions|orders|trades}` 读取相应资源。
+
+`POST /api/brokers/{provider}/orders` 接受与 `/api/paper/order` 相同的载荷；`POST /api/brokers/{provider}/cancel` 接受与 `/api/paper/cancel` 相同的载荷。它们同样需要 CSRF 与同源校验，模拟操作不得绕过模式限制。未连接或不具备能力的适配器返回明确错误，不回退为模拟订单，也不启动真实下单。
+
+适配器业务错误返回结构化错误码与说明；通用操作错误仍使用上述 `{error}` 格式。凭据不进入状态快照或前端构建，仓库不提供可通过页面直接开启的实盘交易开关。
+
+## 前端状态约定
+
+首次数据到达前禁用依赖快照的输入。页面轮询需保留用户编辑中的表单，卸载后使旧响应失效并阻止新请求，拒绝旧快照覆盖新状态。历史研究每页 30 条并按需展开详情；请求失败要显示错误并允许重试，不应清空仍有效的上一份快照。网络请求另设超时，卸载失效不等于撤销后端已接受的操作。
+
+TypeScript 类型对应 HTTP 契约，不改变 Python 对资金、数量、日历与请求参数的最终校验。Vite 开发代理转发到本机 Python 服务；生产环境直接同源请求，后端仍保留 Host、Origin 与 CSRF 校验。
 
 页面有概览/观察列表、单股K线与指标、模拟持仓/委托/成交、研究历史分页、设置与规则说明。演示数据与真实行情显著区分，红涨绿跌。筛选排序不能扰乱输入编辑。

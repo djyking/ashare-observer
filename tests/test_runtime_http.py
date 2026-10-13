@@ -145,6 +145,7 @@ class HTTPTests(unittest.TestCase):
 
     def test_csrf_origin_and_host(self):
         self.assertEqual(self.call("/api/refresh", "POST", {}, {"X-CSRF-Token": "bad"})[0], 403)
+        self.assertEqual(self.call("/api/refresh", "POST", {}, {"X-CSRF-Token": "é"})[0], 403)
         self.assertEqual(self.call("/api/refresh", "POST", {}, {"Origin": "https://foreign.example"})[0], 403)
         self.assertEqual(self.call("/api/state", headers={"Host": "foreign.example"})[0], 403)
         self.assertEqual(self.call("/api/paper/order", "POST", {}, {"Sec-Fetch-Site": "cross-site"})[0], 403)
@@ -156,11 +157,74 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.call("/api/orders/live", "POST", {})[0], 404)
         self.assertEqual(self.call("/../../README.md")[0], 404)
 
+    def test_rejected_post_with_delayed_body_keeps_error_response(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.putrequest("POST", "/api/refresh")
+            conn.putheader("Content-Type", "application/json")
+            conn.putheader("Content-Length", "2")
+            conn.putheader("X-CSRF-Token", "invalid")
+            conn.endheaders()
+            time.sleep(0.05)
+            conn.send(b"{}")
+            response = conn.getresponse()
+            self.assertEqual(response.status, 403)
+            self.assertIn("error", json.loads(response.read()))
+        finally:
+            conn.close()
+
     def test_order_roundtrip(self):
         status, _body = self.call("/api/paper/order", "POST", {"side": "buy", "code": "600036", "quantity": 100, "request_id": "http-buy-001"})
         self.assertEqual(status, 200)
         self.assertEqual(self.call("/api/paper/cancel", "POST", {"order_id": "paper-1"})[0], 200)
         self.assertEqual(self.runtime.snapshot("x")["portfolio"]["orders"][0]["status"], "cancelled")
+
+    def test_broker_catalog_and_shared_paper_ledger(self):
+        status, body = self.call("/api/brokers")
+        self.assertEqual(status, 200)
+        catalog = json.loads(body)
+        self.assertFalse(catalog["live_enabled"])
+        self.assertEqual([p["id"] for p in catalog["providers"]], ["paper", "live"])
+        self.assertEqual(self.call("/api/brokers/paper/orders", "POST", {
+            "side": "buy", "code": "600036", "quantity": 100, "request_id": "broker-http-buy"})[0], 200)
+        status, body = self.call("/api/brokers/paper/orders")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["orders"][0]["id"], "paper-1")
+        status, body = self.call("/api/brokers/paper/account")
+        self.assertEqual(status, 200)
+        self.assertGreater(json.loads(body)["account"]["frozen_cash"], 0)
+        self.assertEqual(self.call("/api/brokers/paper/cancel", "POST", {"order_id": "paper-1"})[0], 200)
+        self.assertEqual(self.runtime.snapshot("x")["portfolio"]["orders"][0]["status"], "cancelled")
+
+    def test_broker_live_and_unsafe_requests_do_not_mutate(self):
+        before = self.runtime.store.load()
+        for operation in ("account", "positions", "orders", "trades"):
+            status, body = self.call(f"/api/brokers/live/{operation}")
+            self.assertEqual(status, 409)
+            self.assertEqual(json.loads(body)["code"], "broker_unconfigured")
+        for operation in ("orders", "cancel"):
+            self.assertEqual(self.call(f"/api/brokers/live/{operation}", "POST", {})[0], 409)
+            self.assertEqual(self.call(f"/api/brokers/paper/{operation}", "POST", {}, {"X-CSRF-Token": "bad"})[0], 403)
+        self.assertEqual(self.call("/api/brokers/unknown/account")[0], 404)
+        self.assertEqual(self.call("/api/brokers/live/enable", "POST", {})[0], 404)
+        self.assertEqual(self.call("/api/brokers/live/credentials", "POST", {})[0], 404)
+        self.assertEqual(self.runtime.store.load(), before)
+
+    def test_frontend_asset_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "assets").mkdir()
+            (root / "assets" / "test.js").write_text("export const ok = true", encoding="utf-8")
+            (root / "private.txt").write_text("must not leak", encoding="utf-8")
+            with patch("ashare_monitor.server.WEB", root):
+                self.assertEqual(self.call("/assets/test.js")[0], 200)
+                for path in ("/assets/../private.txt", "/assets/%2e%2e/private.txt",
+                             "/assets/%2e%2e%5cprivate.txt", "/assets/C:/private.js",
+                             "/assets/missing.js", "/assets/test.js.map", "/api/missing"):
+                    self.assertEqual(self.call(path)[0], 404, path)
+                self.assertEqual(self.call("/")[0], 503)
+                (root / "index.html").write_text("<!doctype html><title>Vue</title>", encoding="utf-8")
+                self.assertEqual(self.call("/")[0], 200)
 
 
 if __name__ == "__main__":

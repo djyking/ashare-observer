@@ -230,8 +230,8 @@ class Runtime:
             stocks = deepcopy(market.get("stocks", []))
             mode = cfg["mode"]
             notice = ("当前为合成日线演示，股价与收益均不代表真实市场。推进交易日会撮合模拟委托。"
-                      if mode == "demo" else "日线研究：仅使用已收盘资料，非实时行情；不提供证券账户或真实下单接口。")
-            return {"app": {"name": "A 股观察台", "version": __version__, "mode": mode,
+                      if mode == "demo" else "日线研究：仅使用已收盘资料，非实时行情；尚未接入券商实盘，已提供账户适配扩展点。")
+            return {"app": {"name": "A 股量化交易研究平台", "version": __version__, "mode": mode,
                             "as_of": market.get("as_of"), "source": market.get("source", "等待扫描"),
                             "fetched_at": market.get("fetched_at"), "refreshing": self.refreshing,
                             "last_error": self.last_error, "notice": notice,

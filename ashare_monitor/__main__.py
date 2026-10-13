@@ -8,7 +8,7 @@ from .server import DashboardServer
 
 
 def main():
-    parser = argparse.ArgumentParser(description="A 股行情研究与模拟持仓看板")
+    parser = argparse.ArgumentParser(description="A 股量化交易研究平台")
     parser.add_argument("--port", type=int, default=18766)
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parents[1] / "var")
     args = parser.parse_args()
@@ -22,7 +22,7 @@ def main():
     signal.signal(signal.SIGINT, stop)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, stop)
-    print(f"A 股观察台：http://127.0.0.1:{server.server_address[1]}", flush=True)
+    print(f"A 股量化交易研究平台：http://127.0.0.1:{server.server_address[1]}", flush=True)
     try:
         server.serve_forever(poll_interval=0.5)
     finally:

@@ -1,0 +1,23 @@
+{
+  "name": "ashare-quantitative-research",
+  "private": true,
+  "version": "1.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vue-tsc --noEmit && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": { "vue": "^3.5.22" },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^26.1.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.10",
+    "vitest": "^3.2.4",
+    "vue-tsc": "^3.1.1"
+  }
+}
